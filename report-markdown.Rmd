@@ -1,0 +1,782 @@
+---
+title: "Predicting Income Capstone Project"
+author: "Vadym Polishchuk"
+date: '2022-05-12'
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=F, message = F, out.width = "75%", fig.align = "center")
+
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(ggpubr)) install.packages("ggpubr", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(randomForest)) install.packages("randomForest", repos = "http://cran.us.r-project.org")
+
+library(tidyverse)
+library(ggpubr)
+library(caret)
+library(randomForest)
+
+set.seed(1)
+```
+\
+\
+\
+
+# Introduction
+
+\
+For my final capstone project I chose a data set that I found on Kaggle called "Adult Census Income". It has information about US citizens and their annual income. Income feature has two variations: over 50K and less than 50K, so I am going to predict whether a person earns more or less than 50 thousand US dollars a year. The original "Adult Census Income" data set has a few billion records, but the data set I am going to be using is reduced by grouping people with similar data. *fnlwgt* column represents the final weight of each record (group) in the original data set which doesn't really matter in this project. The goal of this project is to explore the data, clean it if needed, find patterns and insights and finally build a predictive model.
+\
+
+In this project I am going to use all the data science tools that I have learned over the HarvardX Data Science program to build predictive models, visualize and explore different features and find interesting insights in data. It is an opportunity for me to better understand the principles of working with data as the best way to learn something is to practice. 
+\
+
+This report consists of 4 parts:
+\
+
+1. Data Set Overview and Cleaning (p. 2) \
+2. Exploratory analysis           (p. 4) \
+3. Model Building                 (p. 23) \
+4. Conclusions                    (p. 26) \
+
+\newpage
+
+# Data Set Overview and Cleaning
+
+```{r data-download, echo=FALSE}
+data <- read_csv("https://raw.githubusercontent.com/vadimpk/income-prediction-capstone-harvard/master/adult.csv")
+```
+
+Adult Census Income data set I am going to analyze is a tibble with `r nrow(data)` rows and `r ncol(data)` columns. Each row represents certain group of people with similar preferences and each column is some piece of personal information about people. Here is a structure of a data set. 
+\
+``` {r str-data}
+str(data, give.attr=F)
+```
+\
+There are 6 numerical features and 9 character features. We will transform some of the character features into binary or factored form later. But first let's check for the NA values.
+\
+``` {r check-na}
+sum(colSums(is.na(data)))
+```
+\
+As we can see there are no NA's in the data set. Now let`s have a look at unique values in each column.
+\
+```{r unique}
+sapply(data, function(x){length(unique(x))})
+```
+\
+There are at least two features that can be converted into binary form now and many others that can be transformed into factors later, after some exploratory analysis. Income data and sex data have only 2 different variations of values, so let's create new binary columns *income_factor* and *sex_factor* where 0 means "<=50K" income or "Female" gender and 1 means ">50K" income or "Male" gender. *income* and *sex* columns are changed into 0's and 1's as well but without factors (maybe we can use them later).
+\newpage
+``` {r convert-to-binary}
+# make income feature binary and transform it to factor
+data$income[data$income == "<=50K"] <- 0
+data$income[data$income == ">50K"] <- 1
+data$income <- as.numeric(data$income)
+data$income_factor <- factor(data$income, levels = c(0,1))
+
+# make sex feature binary and transform it to factor
+data$sex[data$sex == "Female"] <- 0
+data$sex[data$sex == "Male"] <- 1
+data$sex <- as.numeric(data$sex)
+data$sex_factor <- factor(data$sex, levels = c(0,1))
+```
+\
+Also, there are some undefined values in columns such as "?". Let's change them to "Other" to make it more readable.
+\
+``` {r change-undefined}
+data$workclass[data$workclass == "?"] <- "Other"
+data$occupation[data$occupation == "?"] <- "Other"
+data$native.country[data$native.country == "?"] <- "Other"
+```
+\
+Finally, there some features that don't have any predictive value on income and so are useless in the analysis. First is *fnlwgt*. It shows the connection with the original data set (that has over 6 billion records). All the similar records from the original data set set were grouped and *fnlwgt* feature shows weight of each group. Second is *education.num*. It is basically the copy of *education* feature but with numbers instead of characters. Later in the exploratory analysis I am going to transform the *education* feature a bit and then convert it to numbers. So at this point *education.num* is another useless feature. Let's drop these features.
+\
+``` {r drop-features}
+data <- select(data, -fnlwgt, -education.num)
+```
+\
+After all the cleaning the data set looks like this with `r ncol(data)` columns. 
+``` {r str-data-2}
+str(data, give.attr=F)
+```
+
+\newpage
+
+# Exploratory analysis
+
+\
+This section is the exploration of every feature of the data set and it's connection and effect on person's annual income. I am going to group values in some columns, remove some of the features that don't have any significant impact and build a lot of plots to see how different features affect income. 
+\
+Let's start with the column we are going to predict (*income*) and it's distribution. (note: 0 means less than 50K, 1 - more than 50K)
+\
+``` {r income-distribution}
+table(data$income)
+prop.table(table(data$income)) 
+```
+\
+So 3/4 of people in the data set earn less than 50K$ a year.
+\
+Now let's look at the correlation between income and other numerical features.
+\
+``` {r corr-table}
+cor(data[,sapply(data, is.numeric)])[,"income"]
+```
+\
+We can see that all the numerical features except *capital.loss* have approximately the same impact on income. Later the *capital.loss* feature will be removed after we look at it closely. We can't see the correlation between income and character's features, but for that I am going to build plots. So now let's explore each feature separately.
+\
+
+\newpage
+
+### Age Feature
+
+\
+Let's start with the age feature. Next plot shows the distribution of age feature with income division (note: red color represents people who have less than 50K annual income). 
+\
+``` {r age-hist-1, echo=FALSE}
+data %>% 
+  ggplot(aes(age, fill=income_factor)) + 
+  geom_histogram(stat="count", binwidth = 10, show.legend = F) +
+  labs(title = "Age Importance on Income", subtitle = "red < 50K income; blue > 50K", 
+       x = "Age", y = "Count") +
+  theme_minimal()
+```
+\
+This plot shows only the amount but it doesn't show the proportion, so let's look at the next plot with proportions (for this I changed *position* to *"fill"* in *geom_histogram()*)
+\
+``` {r age-hist-2, echo=FALSE}
+data %>% 
+  ggplot(aes(age, fill=income_factor)) + 
+  geom_histogram(stat="count", binwidth = 10, show.legend = F, position = "fill") +
+  labs(title = "Age Importance on Income", subtitle = "red < 50K income; blue > 50K", 
+       x = "Age", y = "Count") +
+  theme_minimal()
+```
+\newpage
+We can see that most people who earn more than 50K are between 30 and 60 years as these are the best working years for people. Also these plots show that young people are unlikely to earn much as they are just starting their careers and also there is a weird distribution for older people. Generally these plots can help us to group people who have roughly the same income.
+\
+``` {r group-age}
+data <- data %>% add_column(age_factor = NA)
+data$age_factor[data$age <= 21] <- "younger than 22" 
+data$age_factor[data$age > 21 & data$age <= 31] <- "22 - 31" 
+data$age_factor[data$age > 31 & data$age <= 61] <- "32 - 61" 
+data$age_factor[data$age > 61 & data$age <= 75] <- "62 - 75"
+data$age_factor[data$age > 75] <- "older than 75"
+data$age_factor <- factor(data$age_factor)
+# relevel to make younger than 22 first
+data$age_factor <- relevel(data$age_factor, "younger than 22")
+```
+\
+Here is the distribution of created age groups. Next plots show us that people who are younger than 22 years old are likely to earn less than 50K a year which is quite logical and that people around 32-61 years earn more than other groups.
+\
+``` {r age-hist-3, echo=FALSE, out.width = "90%"}
+grouped_age_plot_1 <- data %>% 
+  ggplot(aes(age_factor, fill=income_factor)) + 
+  geom_histogram(stat="count", binwidth = 1, show.legend = F) +
+  labs(title = "Age Importance Grouped on Income", subtitle = "red < 50K income; blue > 50K",
+       x = "Age Group", y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle=80, vjust=0.6))
+
+grouped_age_plot_2 <- data %>% 
+  ggplot(aes(age_factor, fill=income_factor)) + 
+  geom_histogram(stat="count", binwidth = 1, show.legend = F, position = "fill") +
+  labs(title = "Age Importance Grouped on Income", subtitle = "red < 50K income; blue > 50K",
+       x = "Age Group", y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle=80, vjust=0.6))
+
+ggarrange(grouped_age_plot_1, grouped_age_plot_2, nrow=1,ncol=2)
+```
+
+\newpage
+
+### Workclass Feature
+
+\
+Workclass feature has `r length(unique(data$workclass))` unique values.
+\
+\
+``` {r workclass-hist, echo=FALSE, out.width = "90%"}
+workclass_grouped_plot_1 <- data %>% 
+  ggplot(aes(workclass, fill=income_factor)) + 
+  geom_histogram(stat="count", binwidth = 10, show.legend = F) +
+  labs(title = "Work Class Importance on Income", subtitle = "red < 50K income; blue > 50K", 
+       x = "Work Class", y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle=80, vjust=0.6))
+
+workclass_grouped_plot_2 <- data %>% 
+  ggplot(aes(workclass, fill=income_factor)) + 
+  geom_histogram(stat="count", binwidth = 10, show.legend = F, position = "fill") +
+  labs(x = "Work Class", y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle=80, vjust=0.6))
+
+# arranging plots
+ggarrange(workclass_grouped_plot_1, workclass_grouped_plot_2, ncol = 2, nrow = 1)
+```
+\
+Looking at these two plots we can join *Never-worked* and *Without-pay* values as they both have the same income distribution and basically mean the same thing. 
+\
+``` {r group-workclass}
+data$workclass[data$workclass == "Without-pay"] <- "Never-worked"
+data$workclass <- factor(data$workclass)
+```
+\
+This feature doesn't have significant impact on income as most of the records are in *Private* group (`r length(data$workclass[data$workclass=="Private"])` rows) but still it's not that useless to remove it.
+
+\newpage
+
+### Education Feature
+
+\
+Now let's look at the education feature. It has `r length(unique(data$education))` unique values.
+\
+``` {r education-hist-1, echo=FALSE}
+data %>% 
+  ggplot(aes(education, fill=income_factor)) + 
+  geom_histogram(stat="count", binwidth = 10, show.legend = F) +
+  labs(title = "Education Importance on Income", subtitle = "red < 50K income; blue > 50K", 
+       x = "Education Level", y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle=80, vjust=0.6))
+
+data %>% 
+  ggplot(aes(education, fill=income_factor)) + 
+  geom_histogram(stat="count", binwidth = 10, show.legend = F, position = "fill") +
+  labs(title = "Education Importance on Income", subtitle = "red < 50K income; blue > 50K", 
+       x = "Education Level", y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle=80, vjust=0.6))
+```
+\
+There are some similar values that can be joined together to make the modelling easier later. So let's create new group *Undergraduate* with *10th*, *11th*, *12th*, *1st-4th*, *5th-6th*, *7th-8th*, *9th*, *Preschool* values and also join *Assoc-acdm* and *Assoc-voc* into one group called *Associate*. (note: I'm not very familiar with the US education system so I might have misunderstood some of the terms, but all the transformation were made by intuition)
+\newpage
+``` {r education-grouping}
+undergrad <- c("10th","11th","12th","1st-4th","5th-6th","7th-8th","9th","Preschool")
+data$education[data$education %in% undergrad] <- "Undergraduate" 
+data$education[data$education %in% c("Assoc-acdm","Assoc-voc")] <- "Associate"
+data$education <- factor(data$education)
+```
+\
+``` {r education-hist-2, echo=FALSE, out.width="90%"}
+# education importance grouped
+education_grouped_1 <- data %>% 
+  ggplot(aes(education, fill=income_factor)) + 
+  geom_histogram(stat="count", binwidth = 10, show.legend = F) +
+  labs(title = "Education Importance on Income", subtitle = "red < 50K income; blue > 50K", 
+       x = "Education Level", y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle=80, vjust=0.6))
+
+education_grouped_2 <- data %>% 
+  ggplot(aes(education, fill=income_factor)) + 
+  geom_histogram(stat="count", binwidth = 10, show.legend = F, position = "fill") +
+  labs(title = "Education Importance on Income", subtitle = "red < 50K income; blue > 50K", 
+       x = "Education Level", y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle=80, vjust=0.6))
+
+ggarrange(education_grouped_1, education_grouped_2, nrow=1,ncol=2)
+```
+\
+Education feature is really important as the level of your education really helps to get better job and we can see it from the plots. People with Doctorate, Masters or Prof-school Degree have much higher income on average than people who only finished High-School or haven't finished even that.
+\newpage
+
+### Marital Status Feature
+
+\
+``` {r marital-status-hist-1, echo=FALSE}
+data %>% 
+  ggplot(aes(marital.status, fill=income_factor)) + 
+  geom_histogram(stat="count", binwidth = 10, show.legend = F) +
+  labs(title = "Marital Status Importance on Income", subtitle = "red < 50K income; blue > 50K", 
+       x = "Marital Status", y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle=80, vjust=0.6))
+
+data %>% 
+  ggplot(aes(marital.status, fill=income_factor)) + 
+  geom_histogram(stat="count", binwidth = 10, show.legend = F, position="fill") +
+  labs(title = "Marital Status Importance on Income", subtitle = "red < 50K income; blue > 50K", 
+       x = "Marital Status", y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle=80, vjust=0.6))
+```
+\
+From these plots we can see that there is 1 outlier (*Married-AF-spouse*) and some quite similar values. My idea is to make this feature binary with two values: married or not. (note: I'll consider *Married-spouse-absent* and *Separated* as not married because of similar income distribution)
+\
+``` {r grouping-marital-status}
+data$marital.status[data$marital.status %in% c("Married-civ-spouse", "Married-AF-spouse")] <- 1
+data$marital.status[data$marital.status != 1] <- 0
+data$marital.status <- factor(as.numeric(data$marital.status))
+```
+
+\newpage
+
+Here is the distribution of marital status after grouping. As we can see married people on average earn more, so this feature has significant impact on income and we should use it for predictive analysis.
+\
+``` {r marital-status-hist-2, echo=FALSE}
+data %>% 
+  ggplot(aes(marital.status, fill=income_factor)) + 
+  geom_histogram(stat="count", binwidth = 10, show.legend = F, position = "fill") +
+  labs(title = "Marital Status Importance on Income", subtitle = "red < 50K income; blue > 50K", 
+       x = "Marital Status", y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle=80, vjust=0.6))
+```
+\
+
+### Occupation feature
+
+\
+This feature represents the occupation of a person and has `r length(unique(data$occupation))` unique values.
+\
+``` {r occupation-hist, echo=FALSE}
+data %>% 
+  ggplot(aes(occupation, fill=income_factor)) + 
+  geom_histogram(stat="count", binwidth = 10, show.legend = F) +
+  labs(title = "Occupation Importance on Income", subtitle = "red < 50K income; blue > 50K", 
+       x = "Occupation", y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle=80, vjust=0.6))
+
+data %>% 
+  ggplot(aes(occupation, fill=income_factor)) + 
+  geom_histogram(stat="count", binwidth = 10, show.legend = F,position = "fill") +
+  labs(title = "Occupation Importance on Income", subtitle = "red < 50K income; blue > 50K", 
+       x = "Occupation", y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle=80, vjust=0.6))
+```
+\
+This feature is quite important as different jobs are paid differently and it has effect on income. There is nothing to group or change so let's just factor this feature.
+\
+``` {r occupation-group}
+data$occupation <- factor(data$occupation)
+```
+\newpage
+
+### Relationship Feature
+
+\
+This feature represents the relationship status of a person and has `r length(unique(data$relationship))` unique values.
+\
+``` {r relationship-hist, echo=FALSE, out.width="70%"}
+data %>% 
+  ggplot(aes(relationship, fill=income_factor)) + 
+  geom_histogram(stat="count", binwidth = 10, show.legend = F) +
+  labs(title = "Relationship Importance on Income", subtitle = "red < 50K income; blue > 50K", 
+       x = "Relationship Status", y = "Count") +
+  theme_minimal() 
+
+data %>% 
+  ggplot(aes(relationship, fill=income_factor)) + 
+  geom_histogram(stat="count", binwidth = 10, show.legend = F, position = "fill") +
+  labs(title = "Relationship Importance on Income", subtitle = "red < 50K income; blue > 50K", 
+       x = "Relationship Status", y = "Count") +
+  theme_minimal() 
+```
+\
+There is nothing to group or change so let's just factor this feature. As well as with the marital feature the relationship status has value on the income and it shows that married people earn much more than not married ones. Maybe we can drop one of these (*marital_status* or *relationship*) when conducting predictive analysis as they are quite similar.
+\
+``` {r relationship-group}
+data$relationship <- factor(data$relationship)
+```
+
+\newpage
+
+### Race feature
+
+\
+This feature has `r length(unique(data$race))` unique values.
+\
+``` {r race-hist, echo=FALSE}
+data %>% 
+  ggplot(aes(race, fill=income_factor)) + 
+  geom_histogram(stat="count", binwidth = 10, show.legend = F) +
+  labs(title = "Race Importance on Income", subtitle = "red < 50K income; blue > 50K", 
+       x = "Race", y = "Count") +
+  theme_minimal()
+
+data %>% 
+  ggplot(aes(race, fill=income_factor)) + 
+  geom_histogram(stat="count", binwidth = 10, show.legend = F, position="fill") +
+  labs(title = "Race Importance on Income", subtitle = "red < 50K income; blue > 50K", 
+       x = "Race", y = "Count") +
+  theme_minimal()
+```
+\
+From these plots we can see that there is one main group (*White*) with `r length(data$race[data$race == "White"])` rows and others that can be considered as outliers (because of small amount of records). So this feature has no significant value to us and we can just drop it.
+\
+``` {r race-drop}
+data <- select(data, -race)
+```
+
+\newpage
+
+### Sex factor
+
+\
+We have already made this feature binary so let's see it's effect on income. (note: 0 means female)
+\
+``` {r sex-hist, echo=FALSE}
+data %>% 
+  ggplot(aes(sex_factor, fill=income_factor)) + 
+  geom_histogram(stat="count", binwidth = 10, show.legend = F) +
+  labs(title = "Sex Importance on Income", subtitle = "red < 50K income; blue > 50K\n0 - Female, 1 - Male", x = "Sex", y = "Count") +
+  theme_minimal()
+
+data %>% 
+  ggplot(aes(sex_factor, fill=income_factor)) + 
+  geom_histogram(stat="count", binwidth = 10, show.legend = F, position="fill") +
+  labs(title = "Sex Importance on Income", subtitle = "red < 50K income; blue > 50K\n0 - Female, 1 - Male", x = "Sex", y = "Count") +
+  theme_minimal()
+```
+\
+We can see that this feature is valuable as men earn more than women on average.
+
+\newpage
+
+### Native Country Feature
+
+\
+There are `r length(unique(data$native.country))` unique countries.
+\
+``` {r country-hist, echo=FALSE}
+data %>% 
+  ggplot(aes(native.country, fill=income_factor)) + 
+  geom_histogram(stat="count", binwidth = 10, show.legend = F) +
+  labs(title = "Native Country Importance on Income", subtitle = "red < 50K income; blue > 50K", 
+       x = "Native Country", y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle=80, vjust=0.6))
+
+data %>% 
+  ggplot(aes(native.country, fill=income_factor)) + 
+  geom_histogram(stat="count", binwidth = 10, show.legend = F, position = "fill") +
+  labs(title = "Native Country Importance on Income", subtitle = "red < 50K income; blue > 50K", 
+       x = "Native Country", y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle=80, vjust=0.6))
+```
+\
+Most of the people in the data set are from US (`r length(data$native.country[data$native.country == "United-States"])` rows) so there is no significant value in this feature so we can just drop it.
+\
+``` {r drop-country}
+data <- select(data, -native.country)
+```
+
+\newpage
+
+### Capital Gain Feature
+
+\
+Let's see the distribution of capital gain feature. Supposedly, it has a great predictive power as the more money the person gets outside of their job (I believe this is what this feature is) the more chances there are that this person earns more than 50K a year. 
+\
+``` {r capital-gain-dist, echo=FALSE, out.width="60%"}
+data %>%
+  ggplot(aes(capital.gain)) + 
+  geom_histogram() +
+  labs(title = "Distribution of Capital Gain", x = "Capital Gain", y = "Count") +
+  theme_minimal()
+```
+\
+There is one outlier (*capital.gain* = 99999) this is probably some mistake in the data. Now let's look closer at the distribution of capital gain with division by income.
+\
+``` {r capital-gain-hist-1, echo=FALSE, out.width="90%"}
+
+# capital gain distribution without outliers
+capital_gain_plot_1 <- data %>% filter(capital.gain != 0 & capital.gain != 99999) %>%
+  ggplot(aes(capital.gain, fill = income_factor)) + 
+  geom_histogram(show.legend = F) +
+  labs(x = "Capital Gain", y = "Count") +
+  theme_minimal()
+
+# capital gain distribution from 1 to 20000
+capital_gain_plot_2 <- data %>% filter(capital.gain != 0 & capital.gain <= 20000) %>%
+  ggplot(aes(capital.gain, fill = income_factor)) + 
+  geom_histogram(show.legend = F) +
+  labs(x = "Capital Gain", y = "Count") +
+  theme_minimal()
+
+# capital gain distribution from 1 to 10000
+capital_gain_plot_3 <- data %>% filter(capital.gain != 0 & capital.gain <= 10000) %>%
+  ggplot(aes(capital.gain, fill = income_factor)) + 
+  geom_histogram(show.legend = F) +
+  labs(x = "Capital Gain", y = "Count") +
+  theme_minimal()
+
+# capital gain distribution filled
+capital_gain_plot_4 <- data  %>%
+  ggplot(aes(capital.gain, fill = income_factor)) + 
+  geom_histogram(show.legend = F, position="fill") +
+  labs(x = "Capital Gain", y = "Count") +
+  theme_minimal()
+
+# arranging plots
+ggarrange(capital_gain_plot_1, capital_gain_plot_2, capital_gain_plot_3, capital_gain_plot_4, 
+          ncol = 2, nrow = 2)
+```
+\newpage
+We can divide capital gain feature into 4 groups as it has significant value.
+\
+``` {r capital-gain-grouped}
+data <- data %>% add_column(capital.gain_factor = NA)
+data$capital.gain_factor[data$capital.gain == 0] <- "0" 
+data$capital.gain_factor[data$capital.gain > 0 & data$age <= 2500] <- "1 - 2500" 
+data$capital.gain_factor[data$capital.gain > 2500 & data$age <= 7000] <- "2500 - 7000" 
+data$capital.gain_factor[data$capital.gain > 7000] <- "more than 7000"
+data$capital.gain_factor <- factor(data$capital.gain_factor)
+```
+\
+Let's see the distribution after we split the feature. We can see that people who have more than 7000\$ of capital gain are almost 100% sure earning more than 50K\$ a year. Even while most of the people have 0 capital gain, this feature is quite valuable because we can easily predict some people who earn more than 50K a year.
+\
+
+``` {r capital-gain-hist-2, echo=FALSE, out.width="90%"}
+capital_gain_grouped_plot_1 <- data %>% 
+  ggplot(aes(capital.gain_factor,fill=income_factor)) + 
+  geom_histogram(stat="count", show.legend = F) +
+  labs(title = "Capital Gain", subtitle = "red < 50K income; blue > 50K", x = "Capital Gain", y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle=80, vjust=0.6))
+
+capital_gain_grouped_plot_2 <- data %>% ggplot(aes(capital.gain_factor, fill=income_factor)) + 
+  geom_histogram(stat="count", show.legend = F, position = "fill") +
+  labs(title = "Capital Gain", subtitle = "red < 50K income; blue > 50K", x = "Capital Gain", y = "Count") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle=80, vjust=0.6))
+
+ggarrange(capital_gain_grouped_plot_1, capital_gain_grouped_plot_2, ncol=2, nrow=1)
+```
+
+\newpage
+
+### Capital Loss Feature
+
+\
+Capital loss feature has the lowest correlation coefficient with income and most of the values of this feature are zeroes as we can see from the distribution plot, so there is no significant value from this feature and we can drop it.
+\
+``` {r capital-loss-dist, echo=FALSE}
+data %>%
+  ggplot(aes(capital.loss)) + 
+  geom_histogram() +
+  labs(title = "Distribution of Capital Loss", subtitle = "red < 50K income; blue > 50K",
+       x = "Capital Loss", y = "Count") +
+  theme_minimal()
+```
+\
+\
+\
+``` {r drop-loss}
+data <- select(data, -capital.loss)
+```
+
+\newpage
+
+### Working Hours Feature
+
+\
+This feature must be quite valuable to us as the more people work the more they earn, don't they?
+\
+``` {r hours-hist, echo=FALSE}
+data %>% 
+  ggplot(aes(hours.per.week, fill=income_factor)) + 
+  geom_histogram(binwidth = 3, show.legend = F) +
+  labs(title = "Working Hours per Week Importance on Income", subtitle = "red < 50K income; blue > 50K",
+       x = "Working Hours per Week", y = "Count") +
+  theme_minimal()
+
+data %>%
+  ggplot(aes(hours.per.week, fill=income_factor)) + 
+  geom_histogram(binwidth = 3, show.legend = F, position="fill") +
+  labs(title = "Working Hours per Week Importance on Income", subtitle = "red < 50K income; blue > 50K", x = "Working Hours per Week", y = "Count") +
+  theme_minimal()
+```
+\
+As we can see the more the person works the more money he gets, but this is true until around 60 working hours per week. After this number income becomes stable. This is probably because people who work a lot of time work on 2 or 3 different part-time low-paid jobs.
+Let's split this feature into 4 groups:
+\newpage
+``` {r hours-group}
+data <- data %>% add_column(hours.per.week_factor = NA)
+data$hours.per.week_factor[data$hours.per.week < 35] <- "0-35" 
+data$hours.per.week_factor[data$hours.per.week >= 35 & data$hours.per.week < 50] <- "35-49" 
+data$hours.per.week_factor[data$hours.per.week >= 50 & data$hours.per.week <= 60] <- "50-60"
+data$hours.per.week_factor[data$hours.per.week > 60] <- "61-100"
+data$hours.per.week_factor <- factor(data$hours.per.week_factor)
+```
+\
+Here is the distribution of groups.
+\
+``` {r hours-hist-2, echo=FALSE, out.width="90%"}
+hours_grouped_plot_1 <- data %>%
+  ggplot(aes(hours.per.week_factor, fill=income_factor)) + 
+  geom_histogram(stat="count", binwidth = 3, show.legend = F) +
+  labs(title = "Working Hours per Week", 
+       subtitle = "red < 50K income; blue > 50K",
+       x = "Working Hours per Week", y = "Count") +
+  theme_minimal()
+
+hours_grouped_plot_2 <- data %>%
+  ggplot(aes(hours.per.week_factor, fill=income_factor)) + 
+  geom_histogram(stat="count", binwidth = 3, show.legend = F, position = "fill") +
+  labs(title = "Working Hours per Week", 
+       subtitle = "red < 50K income; blue > 50K",
+       x = "Working Hours per Week", y = "Count") +
+  theme_minimal()
+
+ggarrange(hours_grouped_plot_1, hours_grouped_plot_2, ncol=2, nrow=1)
+```
+\
+As we can see people who work 50-60 hours per week earn more, and there is no need to work too much as the payments for such people are even lower than for people who work 50-60 hours. Also people who work less than 35 hours earn the least, as they probably have a part-time job.
+\
+
+\newpage
+
+### Results of Exploratory Analysis
+
+\
+Last thing to do in our exploratory analysis is to remove columns that we don't need.
+\
+``` {r remove-columns}
+columns_to_drop <- c("age","capital.gain","sex","income","hours.per.week")
+data <- data %>% select(-all_of(columns_to_drop))
+```
+\
+After conducting exploratory analysis there are only `r ncol(data)` columns left, all factors. Here is the structure of the data set now.
+\
+``` {r data-str}
+str(data, give.attr=F)
+```
+\
+So, we have explored every feature of the data set, defined important ones and removed useless ones and grouped every feature to make the modelling easier.
+
+\newpage
+
+
+# Model Building
+
+\
+Now let's build some models. I am are going to predict the income feature which is binary (either 0 or 1), and the best models for that are logistic regression, decision tree, random forest and knn method. 
+\
+
+### Split the Data
+\
+First we should split the data into train and test sets.
+\
+``` {r split-data}
+test_index <- createDataPartition(y = data$income_factor, times = 1, p = 0.1, list = FALSE)
+train <- data[-test_index,]
+test <- data[test_index,]
+```
+
+### Logistic Regression
+
+``` {r logistic-regression}
+fitglm <- glm(income_factor~., data=train, family="binomial")
+p_hat_logit <- predict(fitglm, newdata = test, type = "response")
+y_hat_logit <- ifelse(p_hat_logit > 0.5, 1, 0) %>% factor
+
+# accuracy
+glm_accuracy <- confusionMatrix(y_hat_logit, test$income_factor)$overall[["Accuracy"]]
+```
+
+``` {r table-1, echo=FALSE}
+models <- tibble(Model = "Logistic Regression", Accuracy = glm_accuracy)
+knitr::kable(models, align="lc", caption = "Prediction Accuracy for Different Models", digits = 3)
+```
+
+### Decision Tree
+
+``` {r decision-tree}
+fitrpart <- train(income_factor ~ ., method = "rpart", data = train)
+# accuracy
+rpart_accuracy <- confusionMatrix(predict(fitrpart, test), test$income_factor)$overall["Accuracy"]
+```
+
+``` {r table-2, echo=FALSE}
+models <- bind_rows(models, tibble(Model = "Decision Tree", Accuracy = rpart_accuracy))
+knitr::kable(models, align="lc", caption = "Prediction Accuracy for Different Models", digits = 3)
+```
+
+### Random Forest
+
+``` {r random-forest}
+fitrf <- randomForest(income_factor~., data=train)
+
+rf_accuracy <- confusionMatrix(predict(fitrf, test), test$income_factor)$overall["Accuracy"]
+```
+
+``` {r table-3, echo=FALSE}
+models <- bind_rows(models, tibble(Model = "Random Forest", Accuracy = rf_accuracy))
+knitr::kable(models, align="lc", caption = "Prediction Accuracy for Different Models", digits = 3)
+```
+
+### KNN
+
+This method takes a lot of time to run, so I will use the accuracy that I calculated separately on my computer (that took me more than 20 minutes) but I will leave the code here.
+
+``` {r knn}
+#fitknn <- train(income_factor~., data=train, method="knn")
+
+#accuracy <- confusionMatrix(predict(fitknn, test), test$income_factor)$overall["Accuracy"]
+knn_accuracy <- 0.842
+```
+
+``` {r table-4, echo=FALSE}
+models <- bind_rows(models, tibble(Model = "KNN Model", Accuracy = knn_accuracy))
+knitr::kable(models, align="lc", caption = "Prediction Accuracy for Different Models", digits = 3)
+```
+\
+\
+
+So, the best model for income prediction is random forest which gives us `r rf_accuracy*100`% accuracy and the worst is decision tree.
+\
+Here are some other parameters of random forest model
+\
+``` {r rf-params, echo=FALSE}
+matrix <- confusionMatrix(predict(fitrf, test), test$income_factor)
+
+rf_sensitivity <- matrix$byClass["Sensitivity"]
+rf_specificity <- matrix$byClass["Specificity"]
+rf_balanced_accuracy <- matrix$byClass["Balanced Accuracy"]
+rf_kappa <- matrix$overall["Kappa"]
+
+rf_model <- tibble(Parameters = c("Accuracy",
+                                "Sensitivity",
+                                "Specificity",
+                                "Balanced Accuracy",
+                                "Kappa"), 
+                 Value = c(rf_accuracy,
+                           rf_sensitivity,
+                           rf_specificity,
+                           rf_balanced_accuracy,
+                           rf_kappa))
+
+knitr::kable(rf_model, align="lc", caption = "Parameters of Random Forest Model", digits = 3)
+```
+\newpage
+And also here is the plot of the most important variables.
+\
+``` {r plot-var-imp, echo=FALSE}
+varImpPlot(fitrf, sort = T, main = "Features' Importance")
+```
+\
+The most important variables as we can see from the plot above are: *relationship*, *education*, *capital.gain_factor*, *marital.status* and *occupation*. The least important are: *age_factor*, *workclass*, *hours.per.week_factor* and *sex_factor*. These insights are quite surprising as I didn't think the *relationship* feature would be so important and also I hoped that *age_factor* and *hours.per.week_factor* would be more valuable.
+\newpage
+
+# Conclusions
+
+\
+After analyzing the 'Adult Census Income' data set I have explored every feature and its effect on annual income and built a model to predict whether a person would get more or less than 50 thousand US dollars of income a year. The analysis showed that the most important things in predicting the income are person's relationship status, education and place of work, while other factors have much lower impact. Also while visualizing data I have made some interesting insights, for example, that people who work more than 60 hours a week earn less than people who work 50-60 hours on average.
+\
+
+Also I have learned a lesson that before starting working on a project and analyzing data one should set a specific goal for a project. For example, to reach specific accuracy, or to get to specific sensitivity or specificity value without any significant drop in balanced accuracy and so on. This is very important because the job of a data scientist is not only about randomly analyzing data, it's also about answering questions and reaching the predefined objectives.
+
+\
+In general, while working on this project I have mastered a lot of skills, starting from data wrangling and visualizing up to building predictive models. I have enjoyed analyzing the data set as I have finally had a chance to do it on my own. Also, while choosing the data set for this project I have discovered Kaggle and I am looking forward to join Data Science community and work on other different projects. In the end, I would like to thank edX and HarvardX teams for providing such high-quality Data Science program and for helping people from Ukraine like myself during these bad times.
+
+
+
